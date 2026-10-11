@@ -39,9 +39,9 @@
 <script>
 /* Service worker for offline caching */
 if('serviceWorker'in navigator){
-  const sw=`const V='cc-v6';
+  const sw=`const V='cc-v7';
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.add(location.href)).then(()=>self.skipWaiting()))});
-self.addEventListener('activate',e=>{e.waitUntil(clients.claim())});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>clients.claim()))});
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET')return;
   e.respondWith(caches.match(e.request).then(cached=>{
@@ -76,11 +76,13 @@ const STOCK_ITEMS = [
   "Cup - Lg","Cup - Rg","Milk - Cow 2L","Milk - Oat 1L",
   "Beans - 1kg","Chocolate Powder - Bag",
   "Tea - Box","Iced Coffee - Can","Coke","Sprite","Coke Zero","L&P",
-  "Sugar - Bag","Sweetener - Sachet","Takeaway Trays"
+  "Sugar - Bag","Sweetener - Sachet","Takeaway Trays",
+  "Pie","Slice","Cookie"
 ];
 
 // Menu items — single source of truth for POS
-// canAlt  → shows oat milk toggle (+$1)
+// canAlt  → shows oat milk toggle (+$1 unless oatFee says otherwise)
+// oatFee  → oat surcharge in $; omit for the standard $1, 0 for bundled (combos)
 // cup     → 'lg' | 'rg' | null  (matches STOCK_ITEMS above)
 // milkMl  → cow milk per drink (ml); oat replaces this when alt is toggled
 // beansG  → espresso beans per drink (g)
@@ -102,13 +104,13 @@ const MENU = [
   {id:"lp",    label:"L&P",          size:"",   price:3, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"cold", sk:"L&P"},
   {id:"other", label:"Coffee - Other",size:"",  price:0, canAlt:false, cup:"rg", milkMl:0,   beansG:19, cat:"other", custom:true},
   {id:"donate",label:"Donation",     size:"",   price:0, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"other", custom:true},
-  {id:"pies",  label:"Pies",         size:"",   price:9, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"slice", label:"Slice",         size:"",  price:5.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"cookie", label:"Cookie",       size:"",  price:3.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"combo", label:"Pie + Coffee combo", size:"",  price:13, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
+  {id:"pies",  label:"Pies",         size:"",   price:9,   canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Pie"},
+  {id:"slice", label:"Slice",        size:"",   price:5.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Slice"},
+  {id:"cookie",label:"Cookie",       size:"",   price:3.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Cookie"},
+  {id:"combo", label:"Pie + Coffee Combo",size:"",price:13,canAlt:true,  cup:"rg", milkMl:300, beansG:19, cat:"food", sk:"Pie", oatFee:0},
 ];
-const CAT_ORDER = ["hot","cold","other"];
-const CAT_LABEL = {hot:"Hot", cold:"Cold", other:"Other"};
+const CAT_ORDER = ["hot","cold","food","other"];
+const CAT_LABEL = {hot:"Hot", cold:"Cold", food:"Food", other:"Other"};
 
 // Maps POS menu id → sales report product name (Title Case throughout)
 const M2R = {
@@ -119,6 +121,8 @@ const M2R = {
   ic:"Iced Coffee - Can",     coke:"Coke",    czero:"Coke Zero",
   sprite:"Sprite",            lp:"L&P",
   other:"Coffee - Other",     donate:"Donation",
+  pies:"Pies",                slice:"Slice",
+  cookie:"Cookie",            combo:"Pie + Coffee Combo",
 };
 // All report product names in display order (Alt Milk appended)
 const ALL_PRODUCTS = [...new Set(Object.values(M2R)), "Alt Milk"];
@@ -135,9 +139,40 @@ const hasV  = v => v!==null && v!==undefined && String(v).trim()!=="";
 // Round to 1 decimal place
 const r1 = n => Math.round(parseFloat(n||0)*10)/10;
 
+// Oat surcharge for a menu item — $1 by default, overridden by oatFee
+// (the combo bundles oat in, so the toggle still shows but costs nothing).
+const oatFeeFor = def => def?.canAlt ? (def.oatFee ?? 1) : 0;
+// Unit price of an order line, oat surcharge included.
+const linePrice = (def,it) =>
+  (def?.custom ? (parseFloat(it.cp)||0) : (def?.price||0)) + (it.alt ? oatFeeFor(def) : 0);
+
 function lsGet(k,fb=null){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb}catch{return fb}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
 function lsDel(k){try{localStorage.removeItem(k)}catch{}}
+
+// ── Web App URL from the opening link ────────────────
+// Supports  #url=<encoded>  (preferred — a fragment is never sent to any
+// server) and  ?url=<encoded>  for convenience. Only script.google.com is
+// accepted, so a doctored link cannot silently repoint the cart's submissions
+// at someone else's endpoint. The parameter is wiped from the address bar once
+// read, to keep it out of screenshots and shared links.
+function urlFromLink(){
+  try{
+    const fromHash  = new URLSearchParams(location.hash.replace(/^#/,"")).get("url");
+    const fromQuery = new URLSearchParams(location.search).get("url");
+    const raw = (fromHash||fromQuery||"").trim();
+    if(!raw) return null;
+    const u = new URL(raw);
+    if(u.protocol!=="https:" || u.hostname!=="script.google.com") return null;
+    return u.href;
+  }catch{ return null; }
+}
+function scrubLink(){
+  try{
+    if(!location.search && !location.hash) return;
+    history.replaceState(null,"",location.pathname);
+  }catch{}
+}
 
 function blankEv(){
   return {
@@ -173,7 +208,7 @@ function stockFromSales(sq){
   const cans={};
 
   // Proportional oat milk allocation across milk drinks
-  const milkProds = ["White Coffee - Rg","White Coffee - Lg","Hot Choc - Rg","Hot Choc - Lg"];
+  const milkProds = MENU.filter(m=>m.milkMl>0).map(m=>M2R[m.id]).filter(Boolean);
   const totalMilkDrinks = milkProds.reduce((s,p)=>s+(parseInt(sq[p])||0), 0);
   const altQty = parseInt(sq["Alt Milk"])||0;
 
@@ -467,8 +502,7 @@ function POS({event,onUpdate,onBack}){
 
   const total = useMemo(()=>items.reduce((s,it)=>{
     const d=MENU.find(m=>m.id===it.mid); if(!d) return s;
-    const p = d.custom ? (parseFloat(it.cp)||0) : d.price;
-    return s + (p+(it.alt?1:0)) * it.qty;
+    return s + linePrice(d,it) * it.qty;
   },0),[items]);
 
   const startNew = () => { setOid(uid()); setOname(""); setItems([]); };
@@ -599,7 +633,9 @@ function POS({event,onUpdate,onBack}){
                 {def.size&&<div className="text-xs text-gray-400 mt-0.5">{def.size}</div>}
                 <div className="text-sm font-bold text-kaiGreen mt-1.5">
                   {def.custom?"Custom":fmt(def.price)}
-                  {def.canAlt&&<span className="text-[10px] text-gray-400 font-normal ml-1">+$1 oat</span>}
+                  {def.canAlt&&<span className="text-[10px] text-gray-400 font-normal ml-1">
+                    {oatFeeFor(def)>0?`+$${oatFeeFor(def)} oat`:"oat incl."}
+                  </span>}
                 </div>
               </Btn>
             ))}
@@ -618,8 +654,7 @@ function POS({event,onUpdate,onBack}){
               ? <p className="text-xs text-gray-300 text-center pt-6">Tap items to add</p>
               : items.map(it=>{
                   const def=MENU.find(m=>m.id===it.mid);
-                  const bp=def?.custom?(parseFloat(it.cp)||0):(def?.price||0);
-                  const lt=(bp+(it.alt?1:0))*it.qty;
+                  const lt=linePrice(def,it)*it.qty;
                   return(
                     <div key={it.lid} className="bg-gray-50 rounded-xl p-1.5">
                       <div className="flex items-start gap-1">
@@ -720,11 +755,10 @@ function OrderHistory({orders,onDelete}){
             <div className="px-3 pb-3 bg-gray-50 border-t border-gray-100">
               {o.items?.map((it,i)=>{
                 const def=MENU.find(m=>m.id===it.mid);
-                const bp=def?.custom?(parseFloat(it.cp)||0):(def?.price||0);
                 return(
                   <div key={i} className="flex justify-between text-xs py-1 border-b border-gray-100 last:border-0">
                     <span className="text-gray-700">{def?.label}{def?.size?" "+def.size:""}{it.alt?" (Oat)":""} ×{it.qty}</span>
-                    <span className="font-medium">{fmt((bp+(it.alt?1:0))*it.qty)}</span>
+                    <span className="font-medium">{fmt(linePrice(def,it)*it.qty)}</span>
                   </div>
                 );
               })}
@@ -1650,8 +1684,9 @@ function DashScreen({webAppUrl,onBack}){
 // ROOT
 // ═══════════════════════════════════════════════════════
 function App(){
-  const[url,setUrl] = useState(()=>lsGet(URL_KEY,""));
-  const[cfg,setCfg] = useState(()=>!!lsGet(URL_KEY));
+  const[linkUrl] = useState(()=>{ const u=urlFromLink(); if(u) lsSet(URL_KEY,u); scrubLink(); return u; });
+  const[url,setUrl] = useState(()=>linkUrl||lsGet(URL_KEY,""));
+  const[cfg,setCfg] = useState(()=>!!(linkUrl||lsGet(URL_KEY)));
   const[screen,setScreen] = useState("home");
 
   const saveUrl = u => { lsSet(URL_KEY,u); setUrl(u); setCfg(true); };

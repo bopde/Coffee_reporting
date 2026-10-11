@@ -10,8 +10,8 @@ The app covers the full event workflow: point of sale, sales reporting, stock tr
 
 | File | Purpose |
 |---|---|
-| `coffee-cart-v6.html` | The app — a single HTML file, open it in any browser |
-| `coffee-cart-appsscript-v6.js` | Google Apps Script backend — paste this into your Apps Script project |
+| `index.html` | The app — a single HTML file, open it in any browser |
+| `apps-script-backend.js` | Google Apps Script backend — paste this into your Apps Script project |
 
 ---
 
@@ -31,7 +31,7 @@ Headers are created automatically on first use.
 
 1. In your Google Sheet, go to **Extensions → Apps Script**
 2. Delete the default `myFunction` stub
-3. Paste the contents of `coffee-cart-appsscript-v6.js`
+3. Paste the contents of `apps-script-backend.js`
 4. In Script Properties (**Project Settings → Script Properties**), add a property:
    - Key: `SHEET_ID`
    - Value: your Sheet ID (the long string in your Sheet's URL between `/d/` and `/edit`)
@@ -43,9 +43,35 @@ Headers are created automatically on first use.
 
 ### 3. Open the app
 
-Open `coffee-cart-v6.html` in a browser. On first load you'll be prompted for the Web App URL — paste it in and save. That's it.
+Open `index.html` in a browser. On first load you'll be prompted for the Web App URL — paste it in and save. That's it.
 
 To share with the team, host the HTML file on GitHub Pages or any static file host and send the link. The Web App URL is stored locally in each device's browser — it never appears in the source code.
+
+### Setting up a device with one link
+
+Rather than having each person paste the URL by hand, you can put it in the link itself:
+
+```
+https://<your-host>/index.html#url=<url-encoded Web App URL>
+```
+
+1. URL-encode the Web App URL (`:` → `%3A`, `/` → `%2F`). In a browser console: `encodeURIComponent("https://script.google.com/macros/s/AKfyc.../exec")`.
+2. Append it to your hosted link after `#url=`.
+3. Send that link to the person. Opening it saves the URL to their device and goes straight to the home screen.
+
+A worked example:
+
+```
+https://bopde.github.io/Coffee_reporting/#url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbxEXAMPLE%2Fexec
+```
+
+Notes:
+
+1. `?url=` works identically if you prefer a query string, but `#url=` is better: a fragment is never transmitted to the web server, so the Web App URL stays out of host access logs.
+2. The parameter is removed from the address bar as soon as it is read, so it does not linger in screenshots or in a tab the next person picks up.
+3. Only `https://script.google.com` URLs are accepted. A link pointing anywhere else is ignored and the normal setup screen is shown, so a doctored link cannot silently redirect the cart's submissions.
+4. A link-supplied URL overwrites whatever the device had, so resending the link is also how you roll out a redeployed Apps Script.
+5. **Treat the link exactly like the Web App URL itself — it carries the same access.** Send it directly to the person; don't post it anywhere public.
 
 ---
 
@@ -61,8 +87,14 @@ To share with the team, host the HTML file on GitHub Pages or any static file ho
 | Coke / Sprite / Coke Zero / L&P | $3 | — |
 | Coffee - Other | Custom | — |
 | Donation | Custom | — |
+| Pies | $9 | — |
+| Slice | $5.50 | — |
+| Cookie | $3.50 | — |
+| Pie + Coffee Combo | $13 | — |
 
-Oat milk is available on any milk-based drink for +$1.
+Oat milk is available on any milk-based drink for +$1. The Pie + Coffee Combo also takes oat, but at no extra charge — the combo price covers it.
+
+The POS groups items into four tabs: **Hot**, **Cold**, **Food**, **Other**.
 
 ---
 
@@ -102,13 +134,18 @@ Milk - Cow 2L
 Milk - Oat 1L
 Beans - 1kg
 Chocolate Powder - Bag
-Chocolate Sauce - 500ml Bottle
 Tea - Box
 Iced Coffee - Can
 Coke
 Sprite
 Coke Zero
 L&P
+Sugar - Bag
+Sweetener - Sachet
+Takeaway Trays
+Pie
+Slice
+Cookie
 ```
 
 ---
@@ -120,9 +157,12 @@ When stock is auto-calculated from sales, the app uses these rules:
 - **Beans:** 19g per espresso-based drink (white coffee, black coffee, coffee-other)
 - **Milk (cow):** 300ml per milk drink; oat milk is allocated proportionally based on the Alt Milk count
 - **Milk (oat):** 300ml per alt milk drink, replacing cow milk
-- **Choc sauce:** 50ml per hot choc
 - **Cups:** Rg or Lg per drink type
 - **Cans/bottles:** 1:1 per unit sold
+- **Food:** 1:1 per unit sold — Pies draw `Pie`, Slice draws `Slice`, Cookie draws `Cookie`
+- **Pie + Coffee Combo:** 1 `Pie`, plus one regular white coffee's worth of stock (1 Rg cup, 300ml milk, 19g beans)
+
+Chocolate powder, sugar, sweetener and takeaway trays are not auto-calculated — enter them by hand in the Stock Used section if you track them.
 
 ---
 
@@ -140,7 +180,13 @@ All three are estimates. Revenue is exact (from submitted totals), staff cost is
 
 ## Offline behaviour
 
-The app works fully offline. Data is saved to `localStorage` continuously — nothing is lost if you lose connection mid-event. Submission requires a connection; if offline, a banner is shown and you can resubmit once connectivity returns.
+**Once the page is open, it keeps working with no connection.** Data is saved to `localStorage` continuously — nothing is lost if you lose signal mid-event. Submission requires a connection; if offline, a banner is shown and you can resubmit once connectivity returns.
+
+**The page itself is not cached, so it must be loaded while online at least once per device, and reloading with no signal will fail.** The service worker in `index.html` registers itself from a `blob:` URL, which every browser rejects (`The URL protocol of the script ('blob:...') is not supported`), and the registration error is swallowed by a `.catch(()=>{})`. Nothing has ever been cached. Fixing it means serving the worker as a real same-origin `sw.js` file next to `index.html` — which is why this is documented rather than quietly patched: it ends the "one file, host it anywhere" deployment.
+
+Reloading with no signal fails with `ERR_INTERNET_DISCONNECTED` and leaves a browser error page. **The event data is not lost** — it stays in `localStorage` and comes back intact as soon as the device has signal and the page loads again. It is just unreachable until then.
+
+Practical upshot for staff: **open the app before you leave signal, and don't reload once you're out of it.** If someone does reload and gets an error page, wait for signal and reload again; the event will still be there.
 
 ---
 
@@ -154,13 +200,30 @@ To revoke access, redeploy the Apps Script as a new deployment and distribute th
 
 ## Making changes
 
-**To update the menu or prices:** edit the `MENU` array in `coffee-cart-v6.html`. Each item's `price`, `label`, and `size` fields control what appears in the POS.
+**To update the menu or prices:** edit the `MENU` array in `index.html`. Each item's `price`, `label`, and `size` fields control what appears in the POS.
 
-**To update the staff list:** edit the `STAFF` array near the top of `coffee-cart-v6.html`.
+**To update the staff list:** edit the `STAFF` array near the top of `index.html`.
 
-**To add a stock item:** add it to `STOCK_ITEMS` in `coffee-cart-v6.html`. If it's a can or bottle sold through the POS, also add a `sk` property on the relevant menu item pointing to the new stock item name.
+**To add a stock item:** add it to `STOCK_ITEMS` in `index.html`. If it's a can, bottle, or food item sold through the POS, also add a `sk` property on the relevant menu item pointing to the new stock item name.
 
-After any change, redeploy the Apps Script if the backend was affected, and re-host the HTML file.
+**To add a product:** four places in `index.html` have to agree, or the product will be invisible or won't report:
+
+1. `MENU` — the product itself.
+    a. Give it an `id`, `label`, `price`, and a `cat` that exists in `CAT_ORDER`.
+    b. Set `custom:true` *only* if staff type the price at the till; an item with both a `price` and `custom:true` ignores the price.
+    c. Set `cup`, `milkMl`, `beansG`, and `sk` to whatever stock the item consumes.
+    d. Set `canAlt:true` to offer oat milk. The surcharge is $1 unless you add `oatFee` (`oatFee:0` bundles it in, as the combo does).
+2. `CAT_ORDER` and `CAT_LABEL` — only needed for a brand new category. A `cat` that is missing here has no POS tab, so its items cannot be reached at all.
+3. `M2R` — maps the menu `id` to the report product name. Without an entry the item sells and is counted in the cash/eftpos totals, but its quantity never reaches the Sales section, the submitted report, or the dashboard's Top Sellers.
+4. `STOCK_ITEMS` — only needed if the product draws a new stock item via `sk`.
+
+**To add a category:**
+
+1. Add the category key to `CAT_ORDER`, in the order the tabs should appear.
+2. Add a matching display name to `CAT_LABEL`.
+3. Set `cat` on each `MENU` item that belongs to it.
+
+After any change, redeploy the Apps Script if the backend was affected, and re-host the HTML file. Devices pick a change up on their next reload, because the service worker never registers and nothing is cached (see **Offline behaviour**). The `V` constant in the service worker block is there for whenever that gets fixed; bump it (`cc-v7` → `cc-v8`) if you ever make the worker load properly.
 
 ---
 
