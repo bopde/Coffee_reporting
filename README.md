@@ -184,7 +184,9 @@ All three are estimates. Revenue is exact (from submitted totals), staff cost is
 
 **The page itself is not cached, so it must be loaded while online at least once per device, and reloading with no signal will fail.** The service worker in `index.html` registers itself from a `blob:` URL, which every browser rejects (`The URL protocol of the script ('blob:...') is not supported`), and the registration error is swallowed by a `.catch(()=>{})`. Nothing has ever been cached. Fixing it means serving the worker as a real same-origin `sw.js` file next to `index.html` — which is why this is documented rather than quietly patched: it ends the "one file, host it anywhere" deployment.
 
-Practical upshot for staff: **open the app before you leave signal, and don't reload once you're out of it.**
+Reloading with no signal fails with `ERR_INTERNET_DISCONNECTED` and leaves a browser error page. **The event data is not lost** — it stays in `localStorage` and comes back intact as soon as the device has signal and the page loads again. It is just unreachable until then.
+
+Practical upshot for staff: **open the app before you leave signal, and don't reload once you're out of it.** If someone does reload and gets an error page, wait for signal and reload again; the event will still be there.
 
 ---
 
