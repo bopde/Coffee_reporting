@@ -39,9 +39,9 @@
 <script>
 /* Service worker for offline caching */
 if('serviceWorker'in navigator){
-  const sw=`const V='cc-v6';
+  const sw=`const V='cc-v7';
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.add(location.href)).then(()=>self.skipWaiting()))});
-self.addEventListener('activate',e=>{e.waitUntil(clients.claim())});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>clients.claim()))});
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET')return;
   e.respondWith(caches.match(e.request).then(cached=>{
@@ -76,7 +76,8 @@ const STOCK_ITEMS = [
   "Cup - Lg","Cup - Rg","Milk - Cow 2L","Milk - Oat 1L",
   "Beans - 1kg","Chocolate Powder - Bag",
   "Tea - Box","Iced Coffee - Can","Coke","Sprite","Coke Zero","L&P",
-  "Sugar - Bag","Sweetener - Sachet","Takeaway Trays"
+  "Sugar - Bag","Sweetener - Sachet","Takeaway Trays",
+  "Pie","Slice","Cookie"
 ];
 
 // Menu items — single source of truth for POS
@@ -102,13 +103,13 @@ const MENU = [
   {id:"lp",    label:"L&P",          size:"",   price:3, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"cold", sk:"L&P"},
   {id:"other", label:"Coffee - Other",size:"",  price:0, canAlt:false, cup:"rg", milkMl:0,   beansG:19, cat:"other", custom:true},
   {id:"donate",label:"Donation",     size:"",   price:0, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"other", custom:true},
-  {id:"pies",  label:"Pies",         size:"",   price:9, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"slice", label:"Slice",         size:"",  price:5.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"cookie", label:"Cookie",       size:"",  price:3.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
-  {id:"combo", label:"Pie + Coffee combo", size:"",  price:13, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food",  custom:true},
+  {id:"pies",  label:"Pies",         size:"",   price:9,   canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Pie"},
+  {id:"slice", label:"Slice",        size:"",   price:5.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Slice"},
+  {id:"cookie",label:"Cookie",       size:"",   price:3.5, canAlt:false, cup:null, milkMl:0,   beansG:0,  cat:"food", sk:"Cookie"},
+  {id:"combo", label:"Pie + Coffee Combo",size:"",price:13,canAlt:true,  cup:"rg", milkMl:300, beansG:19, cat:"food", sk:"Pie"},
 ];
-const CAT_ORDER = ["hot","cold","other"];
-const CAT_LABEL = {hot:"Hot", cold:"Cold", other:"Other"};
+const CAT_ORDER = ["hot","cold","food","other"];
+const CAT_LABEL = {hot:"Hot", cold:"Cold", food:"Food", other:"Other"};
 
 // Maps POS menu id → sales report product name (Title Case throughout)
 const M2R = {
@@ -119,6 +120,8 @@ const M2R = {
   ic:"Iced Coffee - Can",     coke:"Coke",    czero:"Coke Zero",
   sprite:"Sprite",            lp:"L&P",
   other:"Coffee - Other",     donate:"Donation",
+  pies:"Pies",                slice:"Slice",
+  cookie:"Cookie",            combo:"Pie + Coffee Combo",
 };
 // All report product names in display order (Alt Milk appended)
 const ALL_PRODUCTS = [...new Set(Object.values(M2R)), "Alt Milk"];
@@ -173,7 +176,7 @@ function stockFromSales(sq){
   const cans={};
 
   // Proportional oat milk allocation across milk drinks
-  const milkProds = ["White Coffee - Rg","White Coffee - Lg","Hot Choc - Rg","Hot Choc - Lg"];
+  const milkProds = MENU.filter(m=>m.milkMl>0).map(m=>M2R[m.id]).filter(Boolean);
   const totalMilkDrinks = milkProds.reduce((s,p)=>s+(parseInt(sq[p])||0), 0);
   const altQty = parseInt(sq["Alt Milk"])||0;
 
